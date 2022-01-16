@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using Newtonsoft.Json;
@@ -13,11 +14,11 @@ namespace P3diTools
 
 		static void Main(string[] args)
 		{
-			var path = @"E:\Forge\Mods\PSWG\PSWG15\resources\models\_old\xwing\blue_update\";
+			var path = @"E:\Forge\Mods\PSWG\PSWG15\resources\models\blasters\dlt19";
 
-			var input = Path.Combine(path, "xwing_with_sockets.p3di");
-			var outModel = Path.Combine(path, "xwing_t65b.p3d");
-			var outRig = Path.Combine(path, "xwing_t65b.p3dr");
+			var input = Path.Combine(path, "dlt19.p3di");
+			var outModel = Path.Combine(path, "dlt19.p3d");
+			var outRig = Path.Combine(path, "dlt19.p3dr");
 
 			var model = JsonConvert.DeserializeObject<P3di>(File.ReadAllText(input));
 
@@ -53,7 +54,7 @@ namespace P3diTools
 					bw.Write((byte)0);
 				}
 
-				WriteTransform(bw, socket.Transform);
+				WriteSocketTransform(bw, socket.Transform);
 			}
 
 			bw.Write(model.Meshes.Length);
@@ -66,7 +67,7 @@ namespace P3diTools
 			bw.Write(Encoding.ASCII.GetBytes(mesh.Name));
 			bw.Write((byte)0);
 
-			WriteTransform(bw, mesh.Transform);
+			WriteMeshTransform(bw, mesh.Transform);
 
 			if (writeVertexData)
 			{
@@ -115,8 +116,10 @@ namespace P3diTools
 				WriteMesh(bw, child, writeVertexData);
 		}
 
-		private static void WriteTransform(BinaryWriter bw, float[][] t)
+		private static void WriteSocketTransform(BinaryWriter bw, float[][] t)
 		{
+			Console.WriteLine(string.Join(",\n", t.Select(floats => string.Join(", ", floats))));
+
 			var mat = new Matrix4x4(
 				t[0][0], t[0][1], t[0][2], t[0][3],
 				t[1][0], t[1][1], t[1][2], t[1][3],
@@ -124,7 +127,43 @@ namespace P3diTools
 				t[3][0], t[3][1], t[3][2], t[3][3]
 			);
 
-			// mat = Matrix4x4.CreateRotationX((float)(-Math.PI / 2)) * mat;
+			var rot = new Matrix4x4(
+				1, 0, 0, 0,
+				0, 0, 1, 0,
+				0, -1, 0, 0,
+				0, 0, 0, 1
+			);
+			mat = rot * mat;
+
+			mat *= Matrix4x4.CreateFromQuaternion(Quaternion.CreateFromAxisAngle(Vector3.UnitX, (float)(-Math.PI / 2)));
+			mat *= Matrix4x4.CreateScale(1, 1, -1);
+
+			bw.Write(mat.M11);
+			bw.Write(mat.M12);
+			bw.Write(mat.M13);
+			bw.Write(mat.M14);
+			bw.Write(mat.M21);
+			bw.Write(mat.M22);
+			bw.Write(mat.M23);
+			bw.Write(mat.M24);
+			bw.Write(mat.M31);
+			bw.Write(mat.M32);
+			bw.Write(mat.M33);
+			bw.Write(mat.M34);
+			bw.Write(mat.M41);
+			bw.Write(mat.M42);
+			bw.Write(mat.M43);
+			bw.Write(mat.M44);
+		}
+
+		private static void WriteMeshTransform(BinaryWriter bw, float[][] t)
+		{
+			var mat = new Matrix4x4(
+				t[0][0], t[0][1], t[0][2], t[0][3],
+				t[1][0], t[1][1], t[1][2], t[1][3],
+				t[2][0], t[2][1], t[2][2], t[2][3],
+				t[3][0], t[3][1], t[3][2], t[3][3]
+			);
 
 			// Convert from Z-up to Y-up
 			var tX = mat.M14;
