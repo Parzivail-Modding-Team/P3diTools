@@ -20,6 +20,7 @@ Generates the following output files in the working directory:
 
 #### Breakdown
 
+* The `compile` tool
 * The option chain `-mrs`
   * `m` option generates a model
   * `r` option generates a rig
