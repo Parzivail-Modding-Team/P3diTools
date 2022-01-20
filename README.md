@@ -12,8 +12,11 @@ Download the [latest release](https://github.com/Parzivail-Modding-Team/P3diTool
 ### Example command:
 
 ```
-P3diTools -mrs my_model.p3di`
+P3diTools -mrs my_model.p3di
 ```
+Generates the following output files in the working directory:
+* `my_model.p3d`
+* `my_model.p3dr`
 
 #### Breakdown
 
