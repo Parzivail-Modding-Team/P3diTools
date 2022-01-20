@@ -1,42 +1,224 @@
 ﻿using System;
 using System.IO;
-using System.Linq;
 using System.Numerics;
 using System.Text;
-using Newtonsoft.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using CommandLine;
+using CommandLine.Text;
 
 namespace P3diTools
 {
+	[Verb("compile", HelpText = "Compile a p3di intermediary into a p3d model and/or p3dr rig.")]
+	public class CompileOptions
+	{
+		[Option('p', "snap-resolution", Required = false, HelpText = "UV vertex snapping resolution, in pixels. Requires -s/--snap.", Default = 128)]
+		public int SnapResolution { get; set; }
+
+		[Option('e', "snap-epsilon", Required = false, HelpText = "Maximum distance, in pixels, that UV vertices may be moved to snap to a pixel edge or corner. Requires -s/--snap.", Default = 0.1f)]
+		public float SnapEpsilon { get; set; }
+
+		[Option('s', "snap", Required = false, HelpText = "Enable UV vertex snapping epsilon.", Default = false)]
+		public bool Snap { get; set; }
+
+		[Option('m', "model", Required = false, HelpText = "Generate a model p3d file.", Default = false)]
+		public bool GenerateModel { get; set; }
+
+		[Option('r', "rig", Required = false, HelpText = "Generate a rig p3dr file.", Default = false)]
+		public bool GenerateRig { get; set; }
+
+		[Option("model-dest", Required = false, HelpText = "(Default: Working directory) Destination directory for the p3d model.", Default = null)]
+		public string ModelDest { get; set; }
+
+		[Option("rig-dest", Required = false, HelpText = "(Default: Working directory) Destination directory for the p3dr rig.", Default = null)]
+		public string RigDest { get; set; }
+
+		[Value(0, MetaName = "input", HelpText = "Input p3di file.")]
+		public string Input { get; set; }
+	}
+
+	[Verb("inspect", HelpText = "Display information about a p3di file.")]
+	public class InspectOptions
+	{
+		[Value(0, MetaName = "input", HelpText = "Input p3di file")]
+		public string Input { get; set; }
+	}
+
 	class Program
 	{
-		private static readonly int SnapResolution = 128;
-		private static readonly float SnapEpsilon = 0.1f;
+		private const int ErrorCodeParse = -1;
+		private const int ErrorCodeInputFileMissing = -2;
+		private const int ErrorCodeP3diJsonParseFailed = -3;
+		private const int ErrorCodeCompileDestModelDirMissing = -4;
+		private const int ErrorCodeCompileDestRigDirMissing = -5;
+		private const int ErrorCodeCompileSkippedBoth = -6;
+		private const int ErrorCodeCompileFailed = -7;
+		private const int ErrorCodeInspectFailed = -8;
 
-		static void Main(string[] args)
+		private static int Main(string[] args)
 		{
-			var path = @"E:\Forge\Mods\PSWG\PSWG15\resources\models\blasters\dlt19";
-
-			var input = Path.Combine(path, "dlt19.p3di");
-			var outModel = Path.Combine(path, "dlt19.p3d");
-			var outRig = Path.Combine(path, "dlt19.p3dr");
-
-			var model = JsonConvert.DeserializeObject<P3di>(File.ReadAllText(input));
-
-			using var bw = new BinaryWriter(File.OpenWrite(outModel));
-			WriteModel(bw, model, false);
-
-			using var bw2 = new BinaryWriter(File.OpenWrite(outRig));
-			WriteModel(bw2, model, true);
-
-			Console.WriteLine("Done.");
+			var parser = new Parser(with => with.HelpWriter = null);
+			var parseResult = parser.ParseArguments<CompileOptions, InspectOptions>(args);
+			return parseResult.MapResult((CompileOptions o) => CompileMain(o), (InspectOptions o) => InspectMain(o), errors => MentionError(parseResult));
 		}
 
-		private static void WriteModel(BinaryWriter bw, P3di model, bool rigOnly)
+		private static int MentionError<T>(ParserResult<T> result)
 		{
-			if (rigOnly)
-				bw.Write(Encoding.ASCII.GetBytes("P3DR"));
+			HelpText helpText;
+			if (result.Errors.IsVersion())
+				helpText = HelpText.AutoBuild(result);
 			else
-				bw.Write(Encoding.ASCII.GetBytes("P3D"));
+				helpText = HelpText.AutoBuild(result, h =>
+				{
+					h.Copyright = "MIT - https://github.com/Parzivail-Modding-Team/P3diTools";
+					return h;
+				}, e => e);
+
+			Console.Error.WriteLine(helpText);
+
+			return ErrorCodeParse;
+		}
+
+		private static int InspectMain(InspectOptions options)
+		{
+			if (!File.Exists(options.Input))
+			{
+				LogError("Could not locate input file");
+				return ErrorCodeInputFileMissing;
+			}
+
+			try
+			{
+				var model = JsonSerializer.Deserialize<P3di>(File.ReadAllText(options.Input));
+
+				Console.WriteLine($"Version: {model.Version}");
+				Console.WriteLine($"Root meshes: {model.Meshes.Length}");
+
+				PrintMeshes(model.Meshes);
+
+				Console.WriteLine($"Sockets: {model.Sockets.Length}");
+
+				foreach (var socket in model.Sockets)
+					Console.WriteLine($"\t{socket.Name} {(socket.Parent != null ? $"(child of {socket.Parent})" : "")}");
+			}
+			catch (JsonException e)
+			{
+				LogError(e.Message);
+				return ErrorCodeP3diJsonParseFailed;
+			}
+			catch (Exception e)
+			{
+				LogError(e.Message);
+				return ErrorCodeInspectFailed;
+			}
+
+			return 0;
+		}
+
+		private static void PrintMeshes(Mesh[] modelMeshes, int tabLevel = 1)
+		{
+			var tab = new string('\t', tabLevel);
+
+			foreach (var mesh in modelMeshes)
+			{
+				Console.WriteLine($"{tab}{mesh.Name} ({mesh.Material})");
+				PrintMeshes(mesh.Children, tabLevel + 1);
+			}
+		}
+
+		private static int CompileMain(CompileOptions options)
+		{
+			var outModel = Path.Combine(options.ModelDest ?? "", Path.GetFileNameWithoutExtension(options.Input) + ".p3d");
+			var outRig = Path.Combine(options.RigDest ?? "", Path.GetFileNameWithoutExtension(options.Input) + ".p3dr");
+
+			var optionVerifyResult = VerifyCompileOptions(options);
+			if (optionVerifyResult != null)
+				return optionVerifyResult.Value;
+
+			try
+			{
+				CompileModel(options.Input, outModel, outRig, options);
+			}
+			catch (JsonException e)
+			{
+				LogError(e.Message);
+				return ErrorCodeP3diJsonParseFailed;
+			}
+			catch (Exception e)
+			{
+				LogError(e.Message);
+				return ErrorCodeCompileFailed;
+			}
+
+			return 0;
+		}
+
+		private static void LogError(object message)
+		{
+			Console.Error.WriteLine($"ERROR: {message}");
+		}
+
+		private static void LogWarn(object message)
+		{
+			Console.Error.WriteLine($"WARN: {message}");
+		}
+
+		private static int? VerifyCompileOptions(CompileOptions options)
+		{
+			if (!File.Exists(options.Input))
+			{
+				LogError("Could not locate input file");
+				return ErrorCodeInputFileMissing;
+			}
+
+			if (options.ModelDest != null && !Directory.Exists(options.ModelDest))
+			{
+				LogError("Could not locate model output directory");
+				return ErrorCodeCompileDestModelDirMissing;
+			}
+
+			if (options.RigDest != null && !Directory.Exists(options.RigDest))
+			{
+				LogError("Could not locate rig output directory");
+				return ErrorCodeCompileDestRigDirMissing;
+			}
+
+			if (!options.GenerateModel && !options.GenerateRig)
+			{
+				LogWarn("Skipped both model and rig");
+				return ErrorCodeCompileSkippedBoth;
+			}
+
+			return null;
+		}
+
+		private static FileStream OpenWrite(string filename)
+		{
+			var fileInfo = new FileInfo(filename);
+			var fileMode = fileInfo.Exists ? FileMode.Truncate : FileMode.CreateNew;
+			return File.Open(filename, fileMode, FileAccess.Write, FileShare.None);
+		}
+
+		private static void CompileModel(string input, string outModel, string outRig, CompileOptions options)
+		{
+			var model = JsonSerializer.Deserialize<P3di>(File.ReadAllText(input));
+
+			if (options.GenerateModel)
+			{
+				using var bw = new BinaryWriter(OpenWrite(outModel));
+				WriteModel(bw, model, true, options);
+			}
+
+			if (options.GenerateRig)
+			{
+				using var bw = new BinaryWriter(OpenWrite(outRig));
+				WriteModel(bw, model, false, options);
+			}
+		}
+
+		private static void WriteModel(BinaryWriter bw, P3di model, bool writeVertexData, CompileOptions options)
+		{
+			bw.Write(Encoding.ASCII.GetBytes(writeVertexData ? "P3D" : "P3DR"));
 
 			bw.Write(model.Version);
 
@@ -59,10 +241,10 @@ namespace P3diTools
 
 			bw.Write(model.Meshes.Length);
 			foreach (var mesh in model.Meshes)
-				WriteMesh(bw, mesh, !rigOnly);
+				WriteMesh(bw, mesh, writeVertexData, options);
 		}
 
-		private static void WriteMesh(BinaryWriter bw, Mesh mesh, bool writeVertexData)
+		private static void WriteMesh(BinaryWriter bw, Mesh mesh, bool writeVertexData, CompileOptions options)
 		{
 			bw.Write(Encoding.ASCII.GetBytes(mesh.Name));
 			bw.Write((byte)0);
@@ -71,7 +253,7 @@ namespace P3diTools
 
 			if (writeVertexData)
 			{
-				bw.Write(GetMaterial(mesh.Material));
+				bw.Write(GetMaterial(mesh.Name, mesh.Material));
 
 				bw.Write(mesh.Faces.Length);
 				foreach (var face in mesh.Faces)
@@ -86,14 +268,14 @@ namespace P3diTools
 							WriteVec3(bw, vertices[vertIdx].Position);
 
 							for (var i = 0; i < 2; i++)
-								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i]));
+								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i], options));
 						}
 
 						// Repeat the last triangle vertex to make a quad
 						WriteVec3(bw, vertices[2].Position);
 
 						for (var i = 0; i < 2; i++)
-							bw.Write(SnapTexCoord(vertices[2].Texture[i]));
+							bw.Write(SnapTexCoord(vertices[2].Texture[i], options));
 					}
 					else if (vertices.Length == 4)
 					{
@@ -102,24 +284,22 @@ namespace P3diTools
 							WriteVec3(bw, vertices[vertIdx].Position);
 
 							for (var i = 0; i < 2; i++)
-								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i]));
+								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i], options));
 						}
 					}
 					else
-						throw new NotSupportedException($"Only triangles and quads supported, found {vertices.Length}-gon");
+						throw new NotSupportedException($"Only triangles and quads supported, found {vertices.Length}-gon in object {mesh.Name}");
 				}
 			}
 
 			bw.Write(mesh.Children.Length);
 
 			foreach (var child in mesh.Children)
-				WriteMesh(bw, child, writeVertexData);
+				WriteMesh(bw, child, writeVertexData, options);
 		}
 
 		private static void WriteSocketTransform(BinaryWriter bw, float[][] t)
 		{
-			Console.WriteLine(string.Join(",\n", t.Select(floats => string.Join(", ", floats))));
-
 			var mat = new Matrix4x4(
 				t[0][0], t[0][1], t[0][2], t[0][3],
 				t[1][0], t[1][1], t[1][2], t[1][3],
@@ -197,23 +377,31 @@ namespace P3diTools
 			bw.Write(-v[1]); // Y
 		}
 
-		private static float SnapTexCoord(float f)
+		private static float SnapTexCoord(float f, CompileOptions options)
 		{
-			var rounded = (float)Math.Round(f * SnapResolution);
-			return (Math.Abs(rounded - f * SnapResolution) < SnapEpsilon ? rounded / SnapResolution : f);
+			if (!options.Snap)
+				return f;
+
+			var rounded = (float)Math.Round(f * options.SnapResolution);
+			return (Math.Abs(rounded - f * options.SnapResolution) < options.SnapEpsilon ? rounded / options.SnapResolution : f);
 		}
 
-		private static byte GetMaterial(string materialName)
+		private static byte GetMaterial(string objectName, string materialName)
 		{
-			return materialName switch
+			switch (materialName)
 			{
-				"MAT_DIFFUSE_OPAQUE" => (byte)FaceMaterial.DiffuseOpaque,
-				"MAT_DIFFUSE_CUTOUT" => (byte)FaceMaterial.DiffuseCutout,
-				"MAT_DIFFUSE_TRANSLUCENT" => (byte)FaceMaterial.DiffuseTranslucent,
-				"MAT_EMISSIVE" => (byte)FaceMaterial.Emissive,
-				_ => (byte)FaceMaterial
-					.DiffuseOpaque //throw new InvalidDataException("Expected material name to be one of: MAT_DIFFUSE_OPAQUE, MAT_DIFFUSE_CUTOUT, MAT_DIFFUSE_TRANSLUCENT, MAT_EMISSIVE")
-			};
+				case "MAT_DIFFUSE_OPAQUE":
+					return (byte)FaceMaterial.DiffuseOpaque;
+				case "MAT_DIFFUSE_CUTOUT":
+					return (byte)FaceMaterial.DiffuseCutout;
+				case "MAT_DIFFUSE_TRANSLUCENT":
+					return (byte)FaceMaterial.DiffuseTranslucent;
+				case "MAT_EMISSIVE":
+					return (byte)FaceMaterial.Emissive;
+				default:
+					LogWarn($"Unsupported material \"{materialName}\" for object \"{objectName}\", defaulting to diffuse opaque");
+					return (byte)FaceMaterial.DiffuseOpaque;
+			}
 		}
 	}
 
@@ -227,46 +415,46 @@ namespace P3diTools
 
 	public class Socket
 	{
-		[JsonProperty("name")] public string Name { get; set; }
+		[JsonPropertyName("name")] public string Name { get; set; }
 
-		[JsonProperty("parent")] public string Parent { get; set; }
+		[JsonPropertyName("parent")] public string Parent { get; set; }
 
-		[JsonProperty("transform")] public float[][] Transform { get; set; }
+		[JsonPropertyName("transform")] public float[][] Transform { get; set; }
 	}
 
 	public class Vertex
 	{
-		[JsonProperty("v")] public float[] Position { get; set; }
+		[JsonPropertyName("v")] public float[] Position { get; set; }
 
-		[JsonProperty("t")] public float[] Texture { get; set; }
+		[JsonPropertyName("t")] public float[] Texture { get; set; }
 	}
 
 	public class Face
 	{
-		[JsonProperty("normal")] public float[] Normal { get; set; }
+		[JsonPropertyName("normal")] public float[] Normal { get; set; }
 
-		[JsonProperty("vertices")] public Vertex[] Vertices { get; set; }
+		[JsonPropertyName("vertices")] public Vertex[] Vertices { get; set; }
 	}
 
 	public class Mesh
 	{
-		[JsonProperty("name")] public string Name { get; set; }
+		[JsonPropertyName("name")] public string Name { get; set; }
 
-		[JsonProperty("transform")] public float[][] Transform { get; set; }
+		[JsonPropertyName("transform")] public float[][] Transform { get; set; }
 
-		[JsonProperty("material")] public string Material { get; set; }
+		[JsonPropertyName("material")] public string Material { get; set; }
 
-		[JsonProperty("faces")] public Face[] Faces { get; set; }
+		[JsonPropertyName("faces")] public Face[] Faces { get; set; }
 
-		[JsonProperty("children")] public Mesh[] Children { get; set; }
+		[JsonPropertyName("children")] public Mesh[] Children { get; set; }
 	}
 
 	public class P3di
 	{
-		[JsonProperty("version")] public int Version { get; set; }
+		[JsonPropertyName("version")] public int Version { get; set; }
 
-		[JsonProperty("sockets")] public Socket[] Sockets { get; set; }
+		[JsonPropertyName("sockets")] public Socket[] Sockets { get; set; }
 
-		[JsonProperty("meshes")] public Mesh[] Meshes { get; set; }
+		[JsonPropertyName("meshes")] public Mesh[] Meshes { get; set; }
 	}
 }
