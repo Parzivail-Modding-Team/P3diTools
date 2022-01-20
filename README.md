@@ -10,7 +10,7 @@ Use the [Blender export addon](https://github.com/Parzivail-Modding-Team/Galaxie
 * Up is +Z. This is converted to +Y during compilation.
 * Forward is +Y. This is converted to +Z during compilation.
 * One pixel is 0.1m (10cm).
-* The name of the Objects becomes the name of the submesh.
+* The name of the Object becomes the name of the submesh.
 * All Objects **must** have their *rotation* and *scale* transformations **applied** (Ctrl+A, Rotation & Scale) before export.
   * The origin of an Object becomes the rotation point of a submesh in a compiled model.
 * **Sockets** are defined by adding Empties of type Arrows (Add, Empty, Arrows).
