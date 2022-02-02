@@ -1,11 +1,16 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CommandLine;
 using CommandLine.Text;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Drawing.Processing;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
 
 namespace P3diTools
 {
@@ -37,6 +42,25 @@ namespace P3diTools
 		public string Input { get; set; }
 	}
 
+	[Verb("genmap", HelpText = "Generates a texture map from a p3di file.")]
+	public class GenmapOptions
+	{
+		[Option('r', "resolution", Required = true, HelpText = "UV vertex resolution, in pixels.", Default = 128)]
+		public int Resolution { get; set; }
+
+		[Option('e', "snap-epsilon", Required = false, HelpText = "Maximum distance, in pixels, that UV vertices may be moved to snap to a pixel edge or corner. Requires -s/--snap.", Default = 0.1f)]
+		public float SnapEpsilon { get; set; }
+
+		[Option('s', "snap", Required = false, HelpText = "Enable UV vertex snapping epsilon.", Default = false)]
+		public bool Snap { get; set; }
+
+		[Value(0, MetaName = "input", HelpText = "Input p3di file.")]
+		public string Input { get; set; }
+
+		[Value(1, MetaName = "output", HelpText = "Output image file.")]
+		public string Output { get; set; }
+	}
+
 	[Verb("inspect", HelpText = "Display information about a p3di file.")]
 	public class InspectOptions
 	{
@@ -58,8 +82,13 @@ namespace P3diTools
 		private static int Main(string[] args)
 		{
 			var parser = new Parser(with => with.HelpWriter = null);
-			var parseResult = parser.ParseArguments<CompileOptions, InspectOptions>(args);
-			return parseResult.MapResult((CompileOptions o) => CompileMain(o), (InspectOptions o) => InspectMain(o), errors => MentionError(parseResult));
+			var parseResult = parser.ParseArguments<CompileOptions, GenmapOptions, InspectOptions>(args);
+			return parseResult.MapResult(
+				(CompileOptions o) => CompileMain(o),
+				(GenmapOptions o) => GenmapMain(o),
+				(InspectOptions o) => InspectMain(o),
+				errors => MentionError(parseResult)
+			);
 		}
 
 		private static int MentionError<T>(ParserResult<T> result)
@@ -153,6 +182,32 @@ namespace P3diTools
 			return 0;
 		}
 
+		private static int GenmapMain(GenmapOptions options)
+		{
+			if (!File.Exists(options.Input))
+			{
+				LogError("Could not locate input file");
+				return ErrorCodeInputFileMissing;
+			}
+
+			try
+			{
+				GenModelMap(options.Input, options.Output, options);
+			}
+			catch (JsonException e)
+			{
+				LogError(e.Message);
+				return ErrorCodeP3diJsonParseFailed;
+			}
+			catch (Exception e)
+			{
+				LogError(e.Message);
+				return ErrorCodeCompileFailed;
+			}
+
+			return 0;
+		}
+
 		private static void LogError(object message)
 		{
 			Console.Error.WriteLine($"ERROR: {message}");
@@ -197,6 +252,60 @@ namespace P3diTools
 			var fileInfo = new FileInfo(filename);
 			var fileMode = fileInfo.Exists ? FileMode.Truncate : FileMode.CreateNew;
 			return File.Open(filename, fileMode, FileAccess.Write, FileShare.None);
+		}
+
+		private static void GenModelMap(string inputJson, string outputImage, GenmapOptions options)
+		{
+			var model = JsonSerializer.Deserialize<P3di>(File.ReadAllText(inputJson));
+
+			using var image = new Image<Rgba32>(options.Resolution, options.Resolution, new Rgba32(0, 0, 0, 0));
+
+			image.Mutate(context => { DrawMap(context, model.Meshes, options); });
+
+			image.Save(outputImage);
+		}
+
+		private static void DrawMap(IImageProcessingContext context, Mesh[] meshes, GenmapOptions options)
+		{
+			var drawingOptions = new DrawingOptions
+			{
+				GraphicsOptions =
+				{
+					Antialias = false
+				}
+			};
+
+			foreach (var mesh in meshes)
+			{
+				foreach (var face in mesh.Faces)
+				{
+					if (face.Vertices.Length is > 4 or < 3)
+						continue;
+
+					var texCoords = face.Vertices.Select(v => new Vector2(
+						SnapTexCoord(v.Texture[0], options.Snap, options.Resolution, options.SnapEpsilon),
+						SnapTexCoord(1 - v.Texture[1], options.Snap, options.Resolution, options.SnapEpsilon)
+					)).ToArray();
+
+					if (texCoords.Distinct().Count() < 3)
+						continue;
+
+					var points = texCoords.Select(vertex => new PointF(vertex.X * options.Resolution, vertex.Y * options.Resolution)).ToArray();
+
+					var normal = new Vector3(face.Normal[0], face.Normal[1], face.Normal[2]);
+
+					if (normal.X < 0)
+						normal.X = -normal.X * 0.7f;
+					if (normal.Y < 0)
+						normal.Y = -normal.Y * 0.7f;
+					if (normal.Z < 0)
+						normal.Z = -normal.Z * 0.7f;
+
+					context.FillPolygon(drawingOptions, Color.FromRgb((byte)(normal.X * 255), (byte)(normal.Y * 255), (byte)(normal.Z * 255)), points);
+				}
+
+				DrawMap(context, mesh.Children, options);
+			}
 		}
 
 		private static void CompileModel(string input, string outModel, string outRig, CompileOptions options)
@@ -268,14 +377,14 @@ namespace P3diTools
 							WriteVec3(bw, vertices[vertIdx].Position);
 
 							for (var i = 0; i < 2; i++)
-								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i], options));
+								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i], options.Snap, options.SnapResolution, options.SnapEpsilon));
 						}
 
 						// Repeat the last triangle vertex to make a quad
 						WriteVec3(bw, vertices[2].Position);
 
 						for (var i = 0; i < 2; i++)
-							bw.Write(SnapTexCoord(vertices[2].Texture[i], options));
+							bw.Write(SnapTexCoord(vertices[2].Texture[i], options.Snap, options.SnapResolution, options.SnapEpsilon));
 					}
 					else if (vertices.Length == 4)
 					{
@@ -284,7 +393,7 @@ namespace P3diTools
 							WriteVec3(bw, vertices[vertIdx].Position);
 
 							for (var i = 0; i < 2; i++)
-								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i], options));
+								bw.Write(SnapTexCoord(vertices[vertIdx].Texture[i], options.Snap, options.SnapResolution, options.SnapEpsilon));
 						}
 					}
 					else
@@ -377,13 +486,13 @@ namespace P3diTools
 			bw.Write(-v[1]); // Y
 		}
 
-		private static float SnapTexCoord(float f, CompileOptions options)
+		private static float SnapTexCoord(float f, bool snap, int snapR, float snapE)
 		{
-			if (!options.Snap)
+			if (!snap)
 				return f;
 
-			var rounded = (float)Math.Round(f * options.SnapResolution);
-			return (Math.Abs(rounded - f * options.SnapResolution) < options.SnapEpsilon ? rounded / options.SnapResolution : f);
+			var rounded = (float)Math.Round(f * snapR);
+			return (Math.Abs(rounded - f * snapR) < snapE ? rounded / snapR : f);
 		}
 
 		private static byte GetMaterial(string objectName, string materialName)
