@@ -279,33 +279,44 @@ namespace P3diTools
 			{
 				foreach (var face in mesh.Faces)
 				{
-					if (face.Vertices.Length is > 4 or < 3)
+					if (!TryGetPoints(options, face, 0, out var points, out var normal))
 						continue;
-
-					var texCoords = face.Vertices.Select(v => new Vector2(
-						SnapTexCoord(v.Texture[0], options.Snap, options.Resolution, options.SnapEpsilon),
-						SnapTexCoord(1 - v.Texture[1], options.Snap, options.Resolution, options.SnapEpsilon)
-					)).ToArray();
-
-					if (texCoords.Distinct().Count() < 3)
-						continue;
-
-					var points = texCoords.Select(vertex => new PointF(vertex.X * options.Resolution, vertex.Y * options.Resolution)).ToArray();
-
-					var normal = new Vector3(face.Normal[0], face.Normal[1], face.Normal[2]);
-
-					if (normal.X < 0)
-						normal.X = -normal.X * 0.7f;
-					if (normal.Y < 0)
-						normal.Y = -normal.Y * 0.7f;
-					if (normal.Z < 0)
-						normal.Z = -normal.Z * 0.7f;
 
 					context.FillPolygon(drawingOptions, Color.FromRgb((byte)(normal.X * 255), (byte)(normal.Y * 255), (byte)(normal.Z * 255)), points);
 				}
 
 				DrawMap(context, mesh.Children, options);
 			}
+		}
+
+		private static bool TryGetPoints(GenmapOptions options, Face face, float offset, out PointF[] points, out Vector3 normal)
+		{
+			points = null;
+			normal = Vector3.Zero;
+
+			if (face.Vertices.Length is > 4 or < 3)
+				return false;
+
+			var texCoords = face.Vertices.Select(v => new Vector2(
+				SnapTexCoord(v.Texture[0], options.Snap, options.Resolution, options.SnapEpsilon),
+				SnapTexCoord(1 - v.Texture[1], options.Snap, options.Resolution, options.SnapEpsilon)
+			)).ToArray();
+
+			if (texCoords.Distinct().Count() < 3)
+				return false;
+
+			points = texCoords.Select(vertex => new PointF(vertex.X * options.Resolution + offset, vertex.Y * options.Resolution + offset)).ToArray();
+
+			normal = new Vector3(face.Normal[0], face.Normal[1], face.Normal[2]);
+
+			if (normal.X < 0)
+				normal.X = -normal.X * 0.7f;
+			if (normal.Y < 0)
+				normal.Y = -normal.Y * 0.7f;
+			if (normal.Z < 0)
+				normal.Z = -normal.Z * 0.7f;
+
+			return true;
 		}
 
 		private static void CompileModel(string input, string outModel, string outRig, CompileOptions options)
