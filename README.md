@@ -38,5 +38,19 @@ Generates the following output files in the working directory:
 * The option chain `-mrs`
   * `m` option generates a model
   * `r` option generates a rig
-  * `s` option snaps pixels to the grid using the default resolution of 128x and epsilon of 0.1 (see `--help` for setting these options)
+  * `s` option snaps pixels to the grid using the default resolution of 128x and epsilon of 0.1 (Run `P3diTools compile --help` for all options)
 * The input file `my_model.p3di`
+
+## Generating a texture map
+
+```
+P3diTools genmap -r 128 my_model.p3di map.png
+```
+
+* The `genmap` tool
+* The option chain `-r 128`
+  * `r 128` option option sets a texture resolution of 128x128
+* The input file `my_model.p3di`
+* The output file `map.png`
+
+UV vertex snapping is also available for `genmap`. Run `P3diTools genmap --help` for all options.
